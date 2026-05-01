@@ -109,53 +109,66 @@ def _range_vote(current: int, preferred: int) -> int:
 
 # ── Target selection ──────────────────────────────────────────────────────────
 
+def _effective_health(unit: SimUnit, reserved: dict) -> int:
+    """Health remaining after accounting for damage already reserved by teammates."""
+    return unit.health - reserved.get(unit.mul_id, 0)
+
+
 def select_target(
     attacker: SimUnit,
     enemies: List[SimUnit],
     current_range: int,
+    reserved_damage: dict,
 ) -> Optional[SimUnit]:
     """
-    Role-aware target selection.
+    Role-aware target selection with overkill awareness.
 
-    Phase 1 logic:
-      - All roles: prefer the highest point-value living enemy
-        (proxy for "biggest threat")
-      - Sniper: among enemies with damage at current range, pick highest PV
-      - Striker/Brawler: prefer lowest-health enemy (finish them off)
+    Each attacker checks how much damage teammates have already reserved
+    against each enemy. Targets whose effective health (health minus
+    reserved incoming damage) is <= 0 are considered 'spoken for' and
+    deprioritized — the attacker routes to the next best target instead.
+
+    This prevents the whole force piling onto one unit while others
+    stand untouched.
+
+    Selection priority by role:
+      Striker / Brawler / Juggernaut / Ambusher — lowest effective health
+          (close in and finish damaged targets)
+      Sniper — highest point value not already spoken for
+          (eliminate the biggest threat)
+      Skirmisher / Scout — lowest effective health
+          (support quick kills)
+      Default (Missile Boat, unknown) — highest point value
 
     Returns None if no valid targets exist.
 
-    [PHASE2] Add: preferred target type by role, C3 network bonuses,
-                  flanking targets, last-known position tracking.
+    [PHASE2] Add: C3 network bonuses, flanking target bonus,
+                  last-known position tracking, preferred target type by role.
     """
     alive_enemies = [e for e in enemies if e.alive]
     if not alive_enemies:
         return None
 
-    # Filter to enemies that can meaningfully be engaged
-    # (i.e., the attacker has non-zero damage at this range)
-    attacker_dmg = attacker.damage_at_range(current_range)
-    if attacker_dmg == 0:
-        # No damage at this range — still pick a target, just won't hurt
-        # [PHASE2] Could choose not to fire instead
-        pass
+    # Partition into: not yet overkilled vs already spoken for
+    not_overkilled = [e for e in alive_enemies if _effective_health(e, reserved_damage) > 0]
+    candidate_pool = not_overkilled if not_overkilled else alive_enemies
 
     role = attacker.role
 
     if role in ("Striker", "Brawler", "Juggernaut", "Ambusher"):
-        # Prioritize damaged targets — maximize kills
-        return min(alive_enemies, key=lambda e: e.health)
+        # Finish off the most-damaged target that isn't already spoken for
+        return min(candidate_pool, key=lambda e: _effective_health(e, reserved_damage))
 
     if role == "Sniper":
-        # Prioritize highest-value target
-        return max(alive_enemies, key=lambda e: e.bf_point_value)
+        # Highest-value target not already overkilled
+        return max(candidate_pool, key=lambda e: e.bf_point_value)
 
     if role in ("Skirmisher", "Scout"):
-        # Prioritize weakest target for quick kills, support the team
-        return min(alive_enemies, key=lambda e: e.health)
+        # Weakest surviving target for quick kills
+        return min(candidate_pool, key=lambda e: _effective_health(e, reserved_damage))
 
     # Default: highest point value (Missile Boat, unknown roles)
-    return max(alive_enemies, key=lambda e: e.bf_point_value)
+    return max(candidate_pool, key=lambda e: e.bf_point_value)
 
 
 # ── Attack resolution ─────────────────────────────────────────────────────────
@@ -248,20 +261,32 @@ def resolve_turn(
 
     result = TurnResult(turn_number, new_range, initiative_winner)
 
-    # 3. Build attack queue — each living unit picks a target
-    attack_queue = []   # (attacker, target)
+    # 3. Build attack queue — each living unit picks a target.
+    #    reserved_damage tracks how much incoming damage is already
+    #    committed to each enemy so later attackers can route elsewhere.
+    attack_queue   = []              # (attacker, target)
+    reserved_damage: dict[int, int] = {}   # mul_id → damage already spoken for
 
     for unit in side_a:
         if unit.alive:
-            target = select_target(unit, side_b, new_range)
+            target = select_target(unit, side_b, new_range, reserved_damage)
             if target:
                 attack_queue.append((unit, target))
+                # Reserve this attacker's expected damage against the target
+                reserved_damage[target.mul_id] = (
+                    reserved_damage.get(target.mul_id, 0)
+                    + unit.damage_at_range(new_range)
+                )
 
     for unit in side_b:
         if unit.alive:
-            target = select_target(unit, side_a, new_range)
+            target = select_target(unit, side_a, new_range, reserved_damage)
             if target:
                 attack_queue.append((unit, target))
+                reserved_damage[target.mul_id] = (
+                    reserved_damage.get(target.mul_id, 0)
+                    + unit.damage_at_range(new_range)
+                )
 
     # 4. Resolve all attacks, collect pending damage
     # Damage is applied AFTER all attacks are resolved (simultaneous fire)

@@ -55,5 +55,5 @@ DEFAULT_PREFERRED_RANGE = MEDIUM  # fallback for unknown roles
 
 # ── Simulation defaults ───────────────────────────────────────────────────────
 DEFAULT_SIMULATIONS = 750   # per matchup
-MAX_TURNS           = 24    # safety cutoff — prevents infinite loops on draws
+MAX_TURNS           = 50    # safety cutoff — prevents infinite loops on draws
 STARTING_RANGE      = MEDIUM
