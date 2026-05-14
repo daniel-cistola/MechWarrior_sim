@@ -28,6 +28,19 @@ def _parse_move(bf_move_str: str) -> int:
     return int(match.group(1)) if match else 4
 
 
+def _parse_abilities(bf_abilities_str) -> set:
+    """
+    Parse the bf_abilities string into a set of ability tags.
+    Handles NaN, None, and empty strings safely.
+
+    Example input:  "ECM,CASE,LRM1"
+    Example output: {"ECM", "CASE", "LRM1"}
+    """
+    if not bf_abilities_str or str(bf_abilities_str).lower() == "nan":
+        return set()
+    return {tag.strip() for tag in str(bf_abilities_str).split(",") if tag.strip()}
+
+
 @dataclass
 class SimUnit:
     # ── Identity ──────────────────────────────────────────────────────────────
@@ -48,6 +61,13 @@ class SimUnit:
     bf_overheat:       int
     bf_point_value:    int
     move:              int       # parsed from bf_move string
+
+    # ── Special ability flags (parsed from bf_abilities) ──────────────────────
+    # ECM / AECM: active jammers — add +2 to-hit for attackers targeting this unit
+    # STL (Stealth): stealth system — add +2 to-hit for attackers targeting this unit
+    has_ecm:     bool = False
+    has_aecm:    bool = False
+    has_stealth: bool = False
 
     # ── Derived / cached ──────────────────────────────────────────────────────
     max_health:        int = field(init=False)
@@ -97,6 +117,8 @@ class SimUnit:
         Build a SimUnit from a pandas Series or dict row
         loaded from battlemechs_sim_ready.csv.
         """
+        abilities = _parse_abilities(row.get("bf_abilities", ""))
+
         return cls(
             mul_id           = int(row["mul_id"]),
             name             = str(row["name"]),
@@ -113,8 +135,16 @@ class SimUnit:
             bf_overheat      = int(row.get("bf_overheat", 0)),
             bf_point_value   = int(row.get("bf_point_value", 0)),
             move             = _parse_move(row.get("bf_move", "4")),
+            has_ecm          = "ECM"  in abilities,
+            has_aecm         = "AECM" in abilities,
+            has_stealth      = "STL"  in abilities,
         )
 
     def __repr__(self):
         status = f"{self.health}/{self.max_health}hp" if self.alive else "DESTROYED"
-        return f"<{self.name} {self.variant} [{self.role}] {status}>"
+        flags  = []
+        if self.has_ecm:     flags.append("ECM")
+        if self.has_aecm:    flags.append("AECM")
+        if self.has_stealth: flags.append("STL")
+        tag = f" [{','.join(flags)}]" if flags else ""
+        return f"<{self.name} {self.variant} [{self.role}]{tag} {status}>"
